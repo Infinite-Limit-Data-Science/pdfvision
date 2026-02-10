@@ -549,6 +549,7 @@ def vision_extract_invoice_json_from_pages(
     max_pages: Optional[int] = None,
     verify: bool = True,
     return_evidence: bool = False,
+    debug_dir: Optional[Path] = None
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     if not page_images_b64:
         blank = _blank_invoice_obj()
@@ -560,6 +561,9 @@ def vision_extract_invoice_json_from_pages(
         {"role": "user", "content": _build_pages_user_content(page_images_b64, max_pages=max_pages)},
     ]
     raw_extract = (vision_call(messages_extract) or "").strip()
+    if debug_dir:
+        (debug_dir / "raw_extract.txt").write_text(raw_extract, encoding="utf-8")
+
 
     if raw_extract == "The image is not an invoice":
         return raw_extract, None
@@ -590,6 +594,8 @@ def vision_extract_invoice_json_from_pages(
         },
     ]
     raw_verify = (vision_call(messages_verify) or "").strip()
+    if debug_dir:
+        (debug_dir / "raw_verify.txt").write_text(raw_verify, encoding="utf-8")
 
     if raw_verify == "The image is not an invoice":
         return raw_verify, None
@@ -615,6 +621,7 @@ def extract_invoice_json_from_pdf_bytes_option_c(
     max_pages: Optional[int] = None,
     verify: bool = True,
     return_evidence: bool = False,
+    debug_dir: Optional[Path] = None
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     page_imgs = render_all_pdf_pages_as_images_b64(
         pdf_bytes, dpi=dpi, clip_to_content=clip_to_content, max_pages=max_pages
@@ -625,6 +632,7 @@ def extract_invoice_json_from_pdf_bytes_option_c(
         max_pages=max_pages,
         verify=verify,
         return_evidence=return_evidence,
+        debug_dir=debug_dir,
     )
 
 def _write_png_b64_to_file(b64_png: str, out_path: Path) -> None:
@@ -767,6 +775,7 @@ def main() -> int:
             max_pages=max_pages,
             verify=True,
             return_evidence=args.write_evidence,
+            debug_dir=out_dir,
         )
         print("\n[DEBUG] extract() returned:")
         print(f"[DEBUG] invoice_json_text chars: {len(invoice_json_text or '')}")
