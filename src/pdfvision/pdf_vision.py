@@ -768,6 +768,14 @@ def main() -> int:
             verify=True,
             return_evidence=args.write_evidence,
         )
+        print("\n[DEBUG] extract() returned:")
+        print(f"[DEBUG] invoice_json_text chars: {len(invoice_json_text or '')}")
+        print(f"[DEBUG] evidence type: {type(evidence).__name__}")
+        if isinstance(evidence, dict):
+            print(f"[DEBUG] evidence keys: {list(evidence.keys())[:25]}")
+            print(f"[DEBUG] evidence json preview: {json.dumps(evidence, ensure_ascii=False)[:300]}...")
+        else:
+            print(f"[DEBUG] evidence value preview: {str(evidence)[:300]}")
 
         if args.write_json:
             (out_dir / "invoice.json").write_text(invoice_json_text, encoding="utf-8")
