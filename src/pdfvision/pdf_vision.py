@@ -19,10 +19,7 @@ You will be shown one or more images (pages) from a PDF attachment.
 Your job is to extract invoice-related data and output EXACTLY ONE JSON object.
 
 CRITICAL OUTPUT RULES:
-- If the document is NOT an invoice, output EXACTLY:
-  The image is not an invoice
-  (and nothing else)
-- Otherwise, output EXACTLY one JSON object surrounded by a fenced code block:
+- Output EXACTLY one JSON object surrounded by a fenced code block:
   ```json
   { ... }
   ```
@@ -208,9 +205,6 @@ CRITICAL:
 }
 - Evidence strings must be short (<= 140 chars).
 - Page numbers are 1-based and must be strings.
-
-If the document is NOT an invoice, output EXACTLY:
-The image is not an invoice
 """
 
 INVOICE_KEYS = [
@@ -486,9 +480,6 @@ def _extract_first_json_obj(text: str) -> Optional[Dict[str, Any]]:
         return None
     t = text.strip()
 
-    if t == "The image is not an invoice":
-        return None
-
     fenced = re.findall(r"```json\s*(\{.*?\})\s*```", t, flags=re.IGNORECASE | re.DOTALL)
     for block in fenced:
         try:
@@ -651,9 +642,6 @@ def _extract_one_page_obj(
     if debug_dir:
         (debug_dir / f"raw_extract_p{page_no_1based}.txt").write_text(raw, encoding="utf-8")
 
-    if raw == "The image is not an invoice":
-        return None
-
     obj = _extract_first_json_obj(raw)
     if debug_dir:
         (debug_dir / f"parsed_extract_p{page_no_1based}.json").write_text(
@@ -691,9 +679,6 @@ def _verify_one_page_obj(
 
     if debug_dir:
         (debug_dir / f"raw_verify_p{page_no_1based}.txt").write_text(raw, encoding="utf-8")
-
-    if raw == "The image is not an invoice":
-        return candidate, None
 
     obj2 = _extract_first_json_obj(raw)
     if debug_dir:
@@ -745,7 +730,9 @@ def extract_invoice_json_from_pages_one_image_per_request(
         extracted_objs.append(obj)
 
     if not extracted_objs:
-        return "The image is not an invoice", None
+        blank = _blank_invoice_obj()
+        merged_json = "```json\n" + json.dumps(blank, ensure_ascii=False, indent=2) + "\n```"
+        return merged_json, None
 
     merged = _merge_invoice_objects(extracted_objs)
     merged_json = "```json\n" + json.dumps(merged, ensure_ascii=False, indent=2) + "\n```"
@@ -776,10 +763,6 @@ def vision_extract_invoice_json_from_pages(
     if debug_dir:
         (debug_dir / "raw_extract.txt").write_text(raw_extract, encoding="utf-8")
 
-
-    if raw_extract == "The image is not an invoice":
-        return raw_extract, None
-
     obj = _extract_first_json_obj(raw_extract)
     if obj is None:
         blank = _blank_invoice_obj()
@@ -808,9 +791,6 @@ def vision_extract_invoice_json_from_pages(
     raw_verify = (vision_call(messages_verify) or "").strip()
     if debug_dir:
         (debug_dir / "raw_verify.txt").write_text(raw_verify, encoding="utf-8")
-
-    if raw_verify == "The image is not an invoice":
-        return raw_verify, None
 
     obj2 = _extract_first_json_obj(raw_verify)
     if obj2 is None:
