@@ -541,6 +541,218 @@ def _pop_evidence(norm_obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         norm_obj.pop("_evidence", None)
     return ev if isinstance(ev, dict) else None
 
+def _norm_money(s: str) -> str:
+    return (s or "").replace("$", "").replace(",", "").strip()
+
+def _norm_key(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().upper())
+
+def _merge_invoice_items(
+    merged_items: List[Dict[str, str]],
+    new_items: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    seen = set()
+    out = []
+
+    def add_item(it: Dict[str, str]) -> None:
+        desc = _norm_key(it.get("item_description", ""))
+        tot  = _norm_money(it.get("item_total", ""))
+        if not desc and not tot:
+            return
+        key = (desc, tot)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(it)
+
+    for it in merged_items:
+        add_item(it)
+    for it in new_items:
+        add_item(it)
+
+    return out
+
+def _merge_invoice_objects(objs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged = _blank_invoice_obj()
+
+    for obj in objs:
+        if not isinstance(obj, dict):
+            continue
+
+        for k in [
+            "invoice_date",
+            "invoice_number",
+            "gross_invoice_amount",
+            "invoice_tax",
+            "invoice_freight",
+            "po_number",
+            "invoice_description",
+        ]:
+            if not merged.get(k) and obj.get(k):
+                merged[k] = obj.get(k, "")
+
+        merged["invoice_items"] = _merge_invoice_items(
+            merged.get("invoice_items", []),
+            obj.get("invoice_items", []),
+        )
+
+    merged["po_line_number"] = ""
+    merged["po_line_amount"] = ""
+
+    return merged
+
+def _merge_evidence_dicts(evidences: List[Dict[str, Any]]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+
+    for ev in evidences:
+        if not isinstance(ev, dict):
+            continue
+        for k, v in ev.items():
+            if k == "invoice_items":
+                if "invoice_items" not in out:
+                    out["invoice_items"] = {}
+                if isinstance(out["invoice_items"], dict) and isinstance(v, dict):
+                    for desc, payload in v.items():
+                        if desc not in out["invoice_items"]:
+                            out["invoice_items"][desc] = payload
+                continue
+
+            if k not in out and v:
+                out[k] = v
+
+    return out
+
+def _build_single_page_user_content(page_b64: str, page_no_1based: int) -> List[Dict[str, Any]]:
+    return [
+        {
+            "type": "text",
+            "text": (
+                f"This is PAGE {page_no_1based} of the invoice PDF. "
+                f"When providing evidence, use page number '{page_no_1based}'. "
+                "Follow system rules exactly."
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": _to_data_url_png(page_b64)}},
+    ]
+
+def _extract_one_page_obj(
+    page_b64: str,
+    *,
+    vision_call: VisionCallable,
+    page_no_1based: int,
+    debug_dir: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    messages = [
+        {"role": "system", "content": INVOICE_EXTRACT_SYSTEM_PROMPT},
+        {"role": "user", "content": _build_single_page_user_content(page_b64, page_no_1based)},
+    ]
+    raw = (vision_call(messages) or "").strip()
+
+    if debug_dir:
+        (debug_dir / f"raw_extract_p{page_no_1based}.txt").write_text(raw, encoding="utf-8")
+
+    if raw == "The image is not an invoice":
+        return None
+
+    obj = _extract_first_json_obj(raw)
+    if debug_dir:
+        (debug_dir / f"parsed_extract_p{page_no_1based}.json").write_text(
+            json.dumps(obj, ensure_ascii=False, indent=2) if obj else "null",
+            encoding="utf-8",
+        )
+
+    if obj is None:
+        return None
+
+    return _normalize_invoice_obj(obj)
+
+def _verify_one_page_obj(
+    page_b64: str,
+    *,
+    vision_call: VisionCallable,
+    page_no_1based: int,
+    candidate: Dict[str, Any],
+    debug_dir: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    candidate_json = json.dumps(candidate, ensure_ascii=False, indent=2)
+
+    messages = [
+        {"role": "system", "content": INVOICE_VERIFY_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": _build_single_page_user_content(page_b64, page_no_1based)
+            + [
+                {"type": "text", "text": "CANDIDATE JSON (to verify and correct):"},
+                {"type": "text", "text": candidate_json},
+            ],
+        },
+    ]
+    raw = (vision_call(messages) or "").strip()
+
+    if debug_dir:
+        (debug_dir / f"raw_verify_p{page_no_1based}.txt").write_text(raw, encoding="utf-8")
+
+    if raw == "The image is not an invoice":
+        return candidate, None
+
+    obj2 = _extract_first_json_obj(raw)
+    if debug_dir:
+        (debug_dir / f"parsed_verify_p{page_no_1based}.json").write_text(
+            json.dumps(obj2, ensure_ascii=False, indent=2) if obj2 else "null",
+            encoding="utf-8",
+        )
+
+    if obj2 is None:
+        return candidate, None
+
+    norm2 = _normalize_invoice_obj(obj2)
+    evidence2 = _pop_evidence(norm2)
+    return norm2, evidence2
+
+def extract_invoice_json_from_pages_one_image_per_request(
+    page_images_b64: List[str],
+    *,
+    vision_call: VisionCallable,
+    verify: bool = True,
+    return_evidence: bool = False,
+    max_pages: Optional[int] = None,
+    debug_dir: Optional[Path] = None,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    extracted_objs: List[Dict[str, Any]] = []
+    evidences: List[Dict[str, Any]] = []
+
+    if max_pages is not None:
+        page_images_b64 = page_images_b64[:max_pages]
+
+    for idx, page_b64 in enumerate(page_images_b64, start=1):
+        obj = _extract_one_page_obj(
+            page_b64, vision_call=vision_call, page_no_1based=idx, debug_dir=debug_dir
+        )
+        if obj is None:
+            continue
+
+        if verify:
+            obj, ev = _verify_one_page_obj(
+                page_b64,
+                vision_call=vision_call,
+                page_no_1based=idx,
+                candidate=obj,
+                debug_dir=debug_dir,
+            )
+            if return_evidence and isinstance(ev, dict):
+                evidences.append(ev)
+
+        extracted_objs.append(obj)
+
+    if not extracted_objs:
+        return "The image is not an invoice", None
+
+    merged = _merge_invoice_objects(extracted_objs)
+    merged_json = "```json\n" + json.dumps(merged, ensure_ascii=False, indent=2) + "\n```"
+
+    merged_evidence = _merge_evidence_dicts(evidences) if (return_evidence and evidences) else None
+    return merged_json, merged_evidence
+
 
 def vision_extract_invoice_json_from_pages(
     page_images_b64: List[str],
@@ -618,14 +830,27 @@ def extract_invoice_json_from_pdf_bytes_option_c(
     vision_call: VisionCallable,
     dpi: int = 300,
     clip_to_content: bool = True,
-    max_pages: Optional[int] = None,
     verify: bool = True,
     return_evidence: bool = False,
-    debug_dir: Optional[Path] = None
+    max_pages: Optional[int] = None,
+    debug_dir: Optional[Path] = None,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     page_imgs = render_all_pdf_pages_as_images_b64(
         pdf_bytes, dpi=dpi, clip_to_content=clip_to_content, max_pages=max_pages
     )
+
+    max_images = int(os.getenv("PDF_VISION_MAX_IMAGES", "0") or "0")
+    if max_images == 1:
+        return extract_invoice_json_from_pages_one_image_per_request(
+            page_imgs,
+            vision_call=vision_call,
+            verify=verify,
+            return_evidence=return_evidence,
+            debug_dir=debug_dir,
+            max_pages=max_pages,
+            
+        )
+
     return vision_extract_invoice_json_from_pages(
         page_imgs,
         vision_call=vision_call,
