@@ -207,10 +207,11 @@ CRITICAL:
 - Page numbers are 1-based and must be strings.
 """
 
-INVOICE_EXTRACT_FROM_TEXT_PROMPT = """\
+INVOICE_EXTRACT_FROM_TEXT_SYSTEM_PROMPT = """\
 You are InvoiceJSONExtractor.
 
-Input: OCR text from a PDF invoice attachment. It may include multiple pages, each preceded by "=== PAGE N ===".
+Input: You will receive ONE USER message containing OCR text for a PDF invoice.
+The OCR may contain multiple pages, each preceded by: "=== PAGE N ===".
 
 Task: Extract invoice fields and output EXACTLY one JSON object in a ```json fenced block.
 
@@ -221,11 +222,15 @@ Rules:
 - gross_invoice_amount should be invoice total / amount due.
 - invoice_items: include only line items with a non-zero numeric item_total.
 
-OCR TEXT:
-{text}
+STRICT OUTPUT CONTRACT:
+1) Start with ```json
+2) EXACTLY ONE JSON object
+3) End with ```
+4) No text before/after
 """
 
-INVOICE_VERIFY_FROM_TEXT_PROMPT = """
+
+INVOICE_VERIFY_FROM_TEXT_SYSTEM_PROMPT = """
 You are InvoiceJSONVerifier, a strict evidence-bound verifier for invoice JSON.
 
 You will be given:
@@ -248,14 +253,14 @@ ABSOLUTE CONSTRAINTS (ANTI-HALLUCINATION):
 OUTPUT RULES:
 - Output EXACTLY one JSON object, and nothing else, wrapped in a fenced code block:
 ```json
-{{ ... }}
+{ ... }
 ```
 - All values MUST be strings. Use "" for missing/unsupported. Never use null.
 - Keep EXACTLY these top-level keys (in any order): "invoice_date","invoice_number","gross_invoice_amount","invoice_tax","invoice_freight","po_number", "po_line_number","po_line_amount","invoice_description","invoice_items","_evidence"
-- "_evidence" is an object. Use {{}} if no evidence for any field.
+- "_evidence" is an object. Use {} if no evidence for any field.
 
 EVIDENCE FORMAT:
-- For each field you keep non-empty, add an entry to _evidence: "_evidence": {{ "invoice_number": {{"page":"1","evidence":"INVOICE NBR: 109688693"}}, ... }}
+- For each field you keep non-empty, add an entry to _evidence: "_evidence": { "invoice_number": {"page":"1","evidence":"INVOICE NBR: 109688693"}, ... }
 - Page numbers are strings and MUST match the OCR page marker number (1-based).
 - Evidence strings must be <= 140 characters and MUST include the full supported value.
 - Evidence must include a meaningful nearby label when possible (e.g., "INVOICE", "AMOUNT DUE", "TOTAL"). If the value appears without any nearby label context, treat it as unsupported and blank it (especially for dates and totals).
@@ -307,7 +312,7 @@ INVOICE ITEMS VERIFICATION:
 Prefer a single OCR line that contains BOTH description text and the total amount. C) If you cannot support BOTH description and total on the same page, blank the entire item: set item_description,item_quantity,item_unit_price,item_total to "" (item_number stays "") and provide no evidence for that item.
 _evidence for items:
 
-Put item evidence under "_evidence"."invoice_items" as an array aligned to the output invoice_items: "_evidence": {{ ... "invoice_items": [ {{"page":"1","evidence":"Monthly Service 120.00"}}, ... ] }}
+Put item evidence under "_evidence"."invoice_items" as an array aligned to the output invoice_items: "_evidence": { ... "invoice_items": [ {"page":"1","evidence":"Monthly Service 120.00"}, ... ] }
 Each item evidence must include both description (or key part) and the amount in the same substring.
 FINAL CHECK BEFORE OUTPUT:
 
@@ -328,7 +333,7 @@ Consulting Services Qty 1 Unit $1000.00 Total $1000.00
 Support Plan Qty 1 Unit $234.56 Total $234.56
 
 CANDIDATE JSON:
-{{
+{
   "invoice_date": "01/15/2026",
   "invoice_number": "INV-2026-00123",
   "gross_invoice_amount": "1234.56",
@@ -339,13 +344,13 @@ CANDIDATE JSON:
   "po_line_amount": "",
   "invoice_description": "",
   "invoice_items": [
-    {{"item_number": "", "item_description": "Consulting Services", "item_quantity": "1", "item_unit_price": "1000.00", "item_total": "1000.00"}},
-    {{"item_number": "", "item_description": "Support Plan", "item_quantity": "1", "item_unit_price": "234.56", "item_total": "234.56"}}
+    {"item_number": "", "item_description": "Consulting Services", "item_quantity": "1", "item_unit_price": "1000.00", "item_total": "1000.00"},
+    {"item_number": "", "item_description": "Support Plan", "item_quantity": "1", "item_unit_price": "234.56", "item_total": "234.56"}
   ]
-}}
+}
 
 VERIFIED OUTPUT:
-{{
+{
   "invoice_date": "01/15/2026",
   "invoice_number": "INV-2026-00123",
   "gross_invoice_amount": "1234.56",
@@ -356,19 +361,19 @@ VERIFIED OUTPUT:
   "po_line_amount": "",
   "invoice_description": "",
   "invoice_items": [
-    {{"item_number": "", "item_description": "Consulting Services", "item_quantity": "1", "item_unit_price": "1000.00", "item_total": "1000.00"}},
-    {{"item_number": "", "item_description": "Support Plan", "item_quantity": "1", "item_unit_price": "234.56", "item_total": "234.56"}}
+    {"item_number": "", "item_description": "Consulting Services", "item_quantity": "1", "item_unit_price": "1000.00", "item_total": "1000.00"},
+    {"item_number": "", "item_description": "Support Plan", "item_quantity": "1", "item_unit_price": "234.56", "item_total": "234.56"}
   ],
-  "_evidence": {{
-    "invoice_number": {{"page": "1", "evidence": "INVOICE #: INV-2026-00123"}},
-    "invoice_date": {{"page": "1", "evidence": "INVOICE DATE: 01/15/2026"}},
-    "gross_invoice_amount": {{"page": "1", "evidence": "TOTAL AMOUNT DUE: $1,234.56"}},
+  "_evidence": {
+    "invoice_number": {"page": "1", "evidence": "INVOICE #: INV-2026-00123"},
+    "invoice_date": {"page": "1", "evidence": "INVOICE DATE: 01/15/2026"},
+    "gross_invoice_amount": {"page": "1", "evidence": "TOTAL AMOUNT DUE: $1,234.56"},
     "invoice_items": [
-      {{"page": "2", "evidence": "Consulting Services Qty 1 Unit $1000.00 Total $1000.00"}},
-      {{"page": "2", "evidence": "Support Plan Qty 1 Unit $234.56 Total $234.56"}}
+      {"page": "2", "evidence": "Consulting Services Qty 1 Unit $1000.00 Total $1000.00"},
+      {"page": "2", "evidence": "Support Plan Qty 1 Unit $234.56 Total $234.56"}
     ]
-  }}
-}}
+  }
+}
 
 FEW-SHOT EXAMPLE 2 (invoice number not labeled; must blank):
 OCR TEXT:
@@ -378,7 +383,7 @@ Date: 03/01/2026
 Total: $50.00
 
 CANDIDATE JSON:
-{{
+{
   "invoice_date": "03/01/2026",
   "invoice_number": "555-ABC",
   "gross_invoice_amount": "50.00",
@@ -389,10 +394,10 @@ CANDIDATE JSON:
   "po_line_amount": "",
   "invoice_description": "",
   "invoice_items": []
-}}
+}
 
 VERIFIED OUTPUT:
-{{
+{
   "invoice_date": "03/01/2026",
   "invoice_number": "",
   "gross_invoice_amount": "50.00",
@@ -403,11 +408,11 @@ VERIFIED OUTPUT:
   "po_line_amount": "",
   "invoice_description": "",
   "invoice_items": [],
-  "_evidence": {{
-    "invoice_date": {{"page": "1", "evidence": "Date: 03/01/2026"}},
-    "gross_invoice_amount": {{"page": "1", "evidence": "Total: $50.00"}}
-  }}
-}}
+  "_evidence": {
+    "invoice_date": {"page": "1", "evidence": "Date: 03/01/2026"},
+    "gross_invoice_amount": {"page": "1", "evidence": "Total: $50.00"}
+  }
+}
 
 FEW-SHOT EXAMPLE 3 (drop/blank $0 items; verify items by description+total):
 OCR TEXT:
@@ -420,7 +425,7 @@ Subscription Credit Total $0.00
 Monthly Service Total $120.00
 
 CANDIDATE JSON:
-{{
+{
   "invoice_date": "04/10/2026",
   "invoice_number": "INV-00077",
   "gross_invoice_amount": "120.00",
@@ -431,13 +436,13 @@ CANDIDATE JSON:
   "po_line_amount": "",
   "invoice_description": "",
   "invoice_items": [
-    {{"item_number": "", "item_description": "Subscription Credit", "item_quantity": "1", "item_unit_price": "0.00", "item_total": "0.00"}},
-    {{"item_number": "", "item_description": "Monthly Service", "item_quantity": "1", "item_unit_price": "120.00", "item_total": "120.00"}}
+    {"item_number": "", "item_description": "Subscription Credit", "item_quantity": "1", "item_unit_price": "0.00", "item_total": "0.00"},
+    {"item_number": "", "item_description": "Monthly Service", "item_quantity": "1", "item_unit_price": "120.00", "item_total": "120.00"}
   ]
-}}
+}
 
 VERIFIED OUTPUT (zero-total item removed/blanked):
-{{
+{
   "invoice_date": "04/10/2026",
   "invoice_number": "INV-00077",
   "gross_invoice_amount": "120.00",
@@ -448,17 +453,17 @@ VERIFIED OUTPUT (zero-total item removed/blanked):
   "po_line_amount": "",
   "invoice_description": "",
   "invoice_items": [
-    {{"item_number": "", "item_description": "Monthly Service", "item_quantity": "1", "item_unit_price": "120.00", "item_total": "120.00"}}
+    {"item_number": "", "item_description": "Monthly Service", "item_quantity": "1", "item_unit_price": "120.00", "item_total": "120.00"}
   ],
-  "_evidence": {{
-    "invoice_number": {{"page": "1", "evidence": "Invoice Number: INV-00077"}},
-    "invoice_date": {{"page": "1", "evidence": "Invoice Date: 04/10/2026"}},
-    "gross_invoice_amount": {{"page": "1", "evidence": "Total: $120.00"}},
+  "_evidence": {
+    "invoice_number": {"page": "1", "evidence": "Invoice Number: INV-00077"},
+    "invoice_date": {"page": "1", "evidence": "Invoice Date: 04/10/2026"},
+    "gross_invoice_amount": {"page": "1", "evidence": "Total: $120.00"},
     "invoice_items": [
-      {{"page": "1", "evidence": "Monthly Service Total $120.00"}}
+      {"page": "1", "evidence": "Monthly Service Total $120.00"}
     ]
-  }}
-}}
+  }
+}
 """
 
 INVOICE_KEYS = [
@@ -1094,11 +1099,17 @@ def extract_invoice_json_from_pdf_bytes_option_c(
     if debug_dir:
         (debug_dir / "ocr_all_pages.txt").write_text(combined_text, encoding="utf-8")
 
-    extract_prompt = INVOICE_EXTRACT_FROM_TEXT_PROMPT.format(text=combined_text)
-    raw = (vision_call([{
-        "role": "user",
-        "content": [{"type": "text", "text": extract_prompt}],
-    }]) or "").strip()
+    extract_user_text = (
+        "OCR TEXT (verbatim):\n"
+        "-----BEGIN OCR TEXT-----\n"
+        f"{combined_text}\n"
+        "-----END OCR TEXT-----\n"
+    )
+
+    raw = (vision_call([
+        {"role": "system", "content": INVOICE_EXTRACT_FROM_TEXT_SYSTEM_PROMPT},
+        {"role": "user", "content": [{"type": "text", "text": extract_user_text}]},
+    ]) or "").strip()
 
     if debug_dir:
         (debug_dir / "raw_extract_combined.txt").write_text(raw, encoding="utf-8")
@@ -1126,7 +1137,7 @@ def extract_invoice_json_from_pdf_bytes_option_c(
         "-----END CANDIDATE JSON-----\n"
     )
     raw_v = (vision_call([
-        {"role": "system", "content": INVOICE_VERIFY_FROM_TEXT_PROMPT},
+        {"role": "system", "content": INVOICE_VERIFY_FROM_TEXT_SYSTEM_PROMPT},
         {"role": "user", "content": [{"type": "text", "text": verify_user_text}]},
     ]) or "").strip()
 
